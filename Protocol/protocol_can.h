@@ -1,7 +1,23 @@
 /**
   ******************************************************************************
   * @file    protocol_can.h
-  * @brief   CAN protocol packing/unpacking and command dispatch
+  * @brief   CAN 通信协议
+  *
+  *  B板发送给A板 (0x180):
+  *    Byte0-1: 转速 RPM (uint16_t, little-endian)
+  *    Byte2-3: 热电偶温度 (int16_t, 0.1°C 单位, little-endian)
+  *    Byte4:   启动电机状态 (0=停止, 1=运行)
+  *    Byte5:   启动电机占空比 (0-100%)
+  *    Byte6-7: 保留
+  *
+  *  A板发送给B板 (0x100):
+  *    Byte0-1: 指定转速 RPM (uint16_t, little-endian)
+  *    Byte2:   电机使能 (0=停止, 1=启动)
+  *    Byte3:   电机占空比 (0-100%)
+  *    Byte4:   点火器使能 (0=关, 1=开)
+  *    Byte5:   点火器占空比 (0-100%)
+  *    Byte6:   点火阀 GLOW (0=关, 1=开)
+  *    Byte7:   主燃阀 MAIN (0=关, 1=开)
   ******************************************************************************
   */
 #ifndef __PROTOCOL_CAN_H__
@@ -11,61 +27,42 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Message IDs */
-#define CAN_ID_CMD          0x100
-#define CAN_ID_MANUAL       0x101
-#define CAN_ID_STATUS       0x180
-#define CAN_ID_SENSOR1      0x181
-#define CAN_ID_ESC_DATA     0x182
-#define CAN_ID_FAULT        0x1F0
+/* ---- CAN 消息 ID ---- */
+#define CAN_ID_B2A_STATUS   0x180   /* B板 → A板: 状态上报 */
+#define CAN_ID_A2B_CMD      0x100   /* A板 → B板: 控制指令 */
 
-/* Command bytes */
-#define CMD_STOP                0x00
-#define CMD_START_SEQUENCE      0x01
-#define CMD_PREHEAT_ONLY        0x02
-#define CMD_IGNITION_ENABLE     0x03
-#define CMD_PUMP_ENABLE         0x04
-#define CMD_MAIN_VALVE_ENABLE   0x05
-#define CMD_CLEAR_FAULT         0x06
-
-/* Manual flags */
-#define MANUAL_IG_PWM_EN        (1U << 0)
-#define MANUAL_GLOW_VALVE_EN    (1U << 1)
-#define MANUAL_MAIN_VALVE_EN    (1U << 2)
-#define MANUAL_ESC_EN           (1U << 3)
-
-/* CAN RX message for queue */
-typedef enum { CAN_MSG_CMD = 0, CAN_MSG_MANUAL } can_msg_type_t;
+/* ---- CAN RX 消息队列结构 ---- */
 typedef struct {
-    can_msg_type_t type;
     uint8_t data[8];
     uint32_t timestamp;
 } can_rx_msg_t;
 
-/* Parsed command */
+/* ---- A板指令 (接收解析后) ---- */
 typedef struct {
-    uint8_t command;
-    uint16_t pump_target;
-    uint16_t glow_target_mA;
-    bool valid;
-} proto_cmd_t;
-
-typedef struct {
-    uint8_t flags;
-    uint8_t ig_duty;
-    uint8_t pump_duty;
-    bool valid;
-} proto_manual_t;
+    uint16_t target_rpm;        /* 指定转速 */
+    uint8_t  motor_en;          /* 电机使能: 0=停止, 1=启动 */
+    uint8_t  motor_duty;        /* 电机占空比: 0-100% */
+    uint8_t  igniter_en;        /* 点火器使能: 0=关, 1=开 */
+    uint8_t  igniter_duty;      /* 点火器占空比: 0-100% */
+    uint8_t  valve_glow;        /* 点火阀: 0=关, 1=开 */
+    uint8_t  valve_main;        /* 主燃阀: 0=关, 1=开 */
+    uint32_t timestamp;         /* 接收时间戳 */
+    bool     valid;             /* 数据有效标志 */
+} can_cmd_t;
 
 void protocol_can_init(void);
+
+/* 处理从队列收到的CAN消息 (CommTask调用) */
 void protocol_can_process_msg(const can_rx_msg_t *msg);
-void protocol_can_send_status(uint8_t state, uint32_t faults, uint8_t sub_en, uint8_t esc_fault);
-void protocol_can_send_sensors(int16_t temp_raw, uint16_t rpm, uint16_t glow_mA);
-void protocol_can_send_esc(uint16_t soa, uint16_t sob, uint16_t soc, uint8_t duty);
-void protocol_can_send_fault(uint16_t faults, uint8_t state, uint8_t sub_en);
-const proto_cmd_t* protocol_can_get_cmd(void);
-const proto_manual_t* protocol_can_get_manual(void);
+
+/* 发送B板状态给A板 (CommTask调用) */
+void protocol_can_send_status(uint16_t rpm, int16_t temp_x10,
+                              uint8_t motor_running, uint8_t motor_duty);
+
+/* 获取最新A板指令 (ControlTask调用) */
+const can_cmd_t* protocol_can_get_cmd(void);
+
+/* CAN接收超时检测 */
 bool protocol_can_is_timeout(void);
-void protocol_can_reset_timeout(void);
 
 #endif /* __PROTOCOL_CAN_H__ */

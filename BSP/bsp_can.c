@@ -1,11 +1,14 @@
 /**
   ******************************************************************************
   * @file    bsp_can.c
-  * @brief   CAN BSP wrappers
+  * @brief   CAN BSP wrappers + ISR callback
   ******************************************************************************
   */
 #include "bsp_can.h"
 #include "can.h"
+#include "protocol_can.h"
+#include "rtos_queues.h"
+#include <string.h>
 
 void bsp_can_start(void) { HAL_CAN_Start(&hcan1); }
 
@@ -44,4 +47,31 @@ bool bsp_can_receive(uint32_t *id, uint8_t *data, uint8_t *len)
     if (id) *id = h.StdId;
     if (len) *len = h.DLC;
     return true;
+}
+
+/**
+  * @brief  HAL CAN RX FIFO0 中断回调 (ISR上下文)
+  *         只接收A板指令帧 (0x100), 通过队列传给CommTask
+  */
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+    if (hcan->Instance != CAN1) return;
+
+    CAN_RxHeaderTypeDef hdr;
+    uint8_t data[8];
+
+    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &hdr, data) != HAL_OK) return;
+    if (hdr.IDE != CAN_ID_STD) return;
+
+    /* 只接收A板指令帧 0x100 */
+    if (hdr.StdId != CAN_ID_A2B_CMD) return;
+
+    can_rx_msg_t msg;
+    memcpy(msg.data, data, 8);
+    msg.timestamp = HAL_GetTick();
+
+    /* 非阻塞写入队列 */
+    if (q_can_rx != NULL) {
+        osMessageQueuePut(q_can_rx, &msg, 0, 0);
+    }
 }

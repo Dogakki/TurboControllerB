@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    protocol_can.c
-  * @brief   CAN protocol implementation
+  * @brief   CAN 通信协议实现
   ******************************************************************************
   */
 #include "protocol_can.h"
@@ -9,60 +9,60 @@
 #include "fault_config.h"
 #include <string.h>
 
-static proto_cmd_t cmd;
-static proto_manual_t manual;
+static can_cmd_t last_cmd;
 static uint32_t last_rx_tick;
 
 void protocol_can_init(void)
 {
-    memset(&cmd, 0, sizeof(cmd));
-    memset(&manual, 0, sizeof(manual));
+    memset(&last_cmd, 0, sizeof(last_cmd));
     last_rx_tick = HAL_GetTick();
+}
+
+/* ---- 解析A板指令帧 (0x100) ---- */
+static void parse_cmd_frame(const uint8_t *d, uint32_t tick)
+{
+    last_cmd.target_rpm   = (uint16_t)((d[1] << 8) | d[0]);
+    last_cmd.motor_en     = d[2];
+    last_cmd.motor_duty   = d[3];
+    last_cmd.igniter_en   = d[4];
+    last_cmd.igniter_duty = d[5];
+    last_cmd.valve_glow   = d[6];
+    last_cmd.valve_main   = d[7];
+    last_cmd.timestamp    = tick;
+    last_cmd.valid        = true;
 }
 
 void protocol_can_process_msg(const can_rx_msg_t *msg)
 {
-    if (msg->type == CAN_MSG_CMD) {
-        cmd.command = msg->data[0];
-        cmd.pump_target = (uint16_t)((msg->data[3] << 8) | msg->data[2]);
-        cmd.glow_target_mA = (uint16_t)((msg->data[5] << 8) | msg->data[4]);
-        cmd.valid = true;
-    } else {
-        manual.flags = msg->data[0];
-        manual.ig_duty = msg->data[1];
-        manual.pump_duty = msg->data[2];
-        manual.valid = true;
-    }
+    /* 根据实际CAN ID分发 (当前filter接收所有帧, 需检查ID) */
+    /* 消息从ISR通过queue传入, ID需在ISR中记录或这里重新判断 */
+    /* 简化处理: 只有0x100会进入queue (在ISR中过滤) */
+    parse_cmd_frame(msg->data, msg->timestamp);
     last_rx_tick = msg->timestamp;
 }
 
-void protocol_can_send_status(uint8_t st, uint32_t fl, uint8_t sub, uint8_t esc)
+/* ---- 发送B板状态帧 (0x180) ---- */
+void protocol_can_send_status(uint16_t rpm, int16_t temp_x10,
+                              uint8_t motor_running, uint8_t motor_duty)
 {
-    uint8_t d[8] = {st, (uint8_t)(fl & 0xFF), (uint8_t)(fl >> 8), sub, esc};
-    bsp_can_send(CAN_ID_STATUS, d, 8);
+    uint8_t d[8] = {
+        (uint8_t)(rpm & 0xFF),          /* Byte0: RPM低字节 */
+        (uint8_t)((rpm >> 8) & 0xFF),   /* Byte1: RPM高字节 */
+        (uint8_t)(temp_x10 & 0xFF),     /* Byte2: 温度低字节 */
+        (uint8_t)((temp_x10 >> 8) & 0xFF), /* Byte3: 温度高字节 */
+        motor_running,                   /* Byte4: 电机状态 */
+        motor_duty,                      /* Byte5: 电机占空比 */
+        0, 0                             /* Byte6-7: 保留 */
+    };
+    bsp_can_send(CAN_ID_B2A_STATUS, d, 8);
 }
 
-void protocol_can_send_sensors(int16_t t, uint16_t rpm, uint16_t ma)
+const can_cmd_t* protocol_can_get_cmd(void)
 {
-    uint8_t d[8] = {(uint8_t)t, (uint8_t)(t >> 8), (uint8_t)rpm, (uint8_t)(rpm >> 8),
-                    (uint8_t)ma, (uint8_t)(ma >> 8)};
-    bsp_can_send(CAN_ID_SENSOR1, d, 8);
+    return &last_cmd;
 }
 
-void protocol_can_send_esc(uint16_t a, uint16_t b, uint16_t c, uint8_t duty)
+bool protocol_can_is_timeout(void)
 {
-    uint8_t d[8] = {(uint8_t)a, (uint8_t)(a >> 8), (uint8_t)b, (uint8_t)(b >> 8),
-                    (uint8_t)c, (uint8_t)(c >> 8), duty};
-    bsp_can_send(CAN_ID_ESC_DATA, d, 8);
+    return ((HAL_GetTick() - last_rx_tick) > CAN_RX_TIMEOUT_MS);
 }
-
-void protocol_can_send_fault(uint16_t fl, uint8_t st, uint8_t sub)
-{
-    uint8_t d[8] = {(uint8_t)fl, (uint8_t)(fl >> 8), st, sub};
-    bsp_can_send(CAN_ID_FAULT, d, 8);
-}
-
-const proto_cmd_t* protocol_can_get_cmd(void) { return &cmd; }
-const proto_manual_t* protocol_can_get_manual(void) { return &manual; }
-bool protocol_can_is_timeout(void) { return ((HAL_GetTick() - last_rx_tick) > CAN_RX_TIMEOUT_MS); }
-void protocol_can_reset_timeout(void) { last_rx_tick = HAL_GetTick(); }

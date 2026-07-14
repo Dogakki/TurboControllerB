@@ -64,19 +64,23 @@ void Task_Comm(void *arg)
 {
     (void)arg;
     for (;;) {
-        /* Process CAN RX from queue */
+        /* 处理CAN接收队列 */
         can_rx_msg_t msg;
         while (osMessageQueueGet(q_can_rx, &msg, NULL, 0) == osOK) {
             protocol_can_process_msg(&msg);
         }
 
-        /* Send status */
-        protocol_can_send_status(
-            (uint8_t)app_get_state(),
-            fault_get_all(),
-            sub_enable_is_active() ? 1 : 0,
-            0 /* esc_fault from drv8311 */
-        );
+        /* 发送B板状态给A板 (0x180) */
+        sensor_data_t sd;
+        if (sensor_get_data(&sd)) {
+            int16_t temp_x10 = sd.temp_valid ? (int16_t)(sd.temp_c * 10.0f) : 0;
+            protocol_can_send_status(
+                (uint16_t)(sd.rpm & 0xFFFF),
+                temp_x10,
+                motor_is_running() ? 1 : 0,
+                motor_get_duty()
+            );
+        }
 
         osDelay(PERIOD_COMM_MS);
     }

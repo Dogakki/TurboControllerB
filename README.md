@@ -176,21 +176,27 @@ SafetyTask 每 5ms 检查 SUB_EN，低电平时：
 
 ## CAN 协议
 
-### A 板 → B 板
+### A 板 → B 板 (0x100)
 
-| ID | 名称 | 说明 |
-|----|------|------|
-| 0x100 | 控制命令 | start/stop/ignition/pump/main/clear_fault |
-| 0x101 | 手动控制 | 直接控制 IG_PWM/GLOW/MAIN/ESC 使能和占空比 |
+| Byte | 内容 | 类型 | 说明 |
+|------|------|------|------|
+| 0-1 | 指定转速 | uint16_t | 目标 RPM (little-endian) |
+| 2 | 电机使能 | uint8_t | 0=停止, 1=启动 |
+| 3 | 电机占空比 | uint8_t | 0-100% |
+| 4 | 点火器使能 | uint8_t | 0=关, 1=开 |
+| 5 | 点火器占空比 | uint8_t | 0-100% |
+| 6 | 点火阀 GLOW | uint8_t | 0=关, 1=开 |
+| 7 | 主燃阀 MAIN | uint8_t | 0=关, 1=开 |
 
-### B 板 → A 板
+### B 板 → A 板 (0x180)
 
-| ID | 名称 | 说明 |
-|----|------|------|
-| 0x180 | 状态反馈 | 当前状态、故障标志、SUB_EN、ESC_FAULT |
-| 0x181 | 传感器数据 | 温度、转速、热火头电流 |
-| 0x182 | 电调数据 | 三相电流、油泵占空比 |
-| 0x1F0 | 故障上报 | 故障标志、故障时状态 |
+| Byte | 内容 | 类型 | 说明 |
+|------|------|------|------|
+| 0-1 | 转速 | uint16_t | 实际 RPM (little-endian) |
+| 2-3 | 温度 | int16_t | 热电偶温度, 0.1°C 单位 |
+| 4 | 电机状态 | uint8_t | 0=停止, 1=运行 |
+| 5 | 电机占空比 | uint8_t | 0-100% |
+| 6-7 | 保留 | — | — |
 
 ## 硬件引脚
 
@@ -253,21 +259,23 @@ cmake --build build/Debug
 ## 数据流
 
 ```
+A板指令 (0x100)
+  │
+  ▼
 CAN ISR ──(Queue)──> CommTask ──> protocol_can_process_msg()
-                                      │
+                                      │ can_cmd_t
                                       ▼
-                                 ControlTask (状态机)
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                 ▼                 ▼
-               motor_set_duty()  valve_glow_on()  ignition_set_duty()
-                    │                 │                 │
-                    ▼                 ▼                 ▼
-               bsp_pwm_*()      bsp_power_*()     bsp_pwm_*()
-                    │                 │                 │
-                    ▼                 ▼                 ▼
-               HAL_TIM_*()      HAL_GPIO_*()      HAL_TIM_*()
-
+                                 ControlTask
+                                      │ apply_can_commands()
+                    ┌─────────────────┼──────────────────┐
+                    ▼                 ▼                  ▼
+               motor_*()        ignition_*()        valve_*()
+                    │                 │                  │
+                    ▼                 ▼                  ▼
+               bsp_pwm_*()      bsp_pwm_*()        bsp_power_*()
+                    │                 │                  │
+                    ▼                 ▼                  ▼
+               HAL_TIM_*()      HAL_TIM_*()        HAL_GPIO_*()
 
 SensorTask ──> sensor_read_all() ──(Mutex)──> sensor_data_t
                     │
@@ -277,6 +285,11 @@ SensorTask ──> sensor_read_all() ──(Mutex)──> sensor_data_t
          │          │          │
          ▼          ▼          ▼
    bsp_spi_*   bsp_tim_*  bsp_adc_*
+
+CommTask ──> protocol_can_send_status(rpm, temp, motor_state)
+                                              │
+                                              ▼
+                                         A板 (0x180)
 ```
 
 ## 版本
